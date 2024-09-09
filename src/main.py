@@ -30,7 +30,7 @@ class DblLinkedHead(DblLinkdListNode):
 
 class PORTS:
     BRAIN = Brain()
-    ONE = Motor(Ports.PORT1, GearSetting.RATIO_18_1, False) #left motor
+    ONE = Motor(Ports.PORT1, GearSetting.RATIO_18_1, True) #left motor
     TWO = MessageLink(Ports.PORT2, "radio", VexlinkType.GENERIC)
     THREE = None
     FOUR = None
@@ -39,7 +39,7 @@ class PORTS:
     SEVEN = None
     EIGHT = Motor(Ports.PORT8)
     NINE = None
-    TEN = Motor(Ports.PORT10, GearSetting.RATIO_18_1, True)
+    TEN = Motor(Ports.PORT10, GearSetting.RATIO_18_1, False)
     A = Light(BRAIN.three_wire_port.a)
     B = Light(BRAIN.three_wire_port.b)
     C = Bumper(BRAIN.three_wire_port.c)
@@ -300,28 +300,44 @@ class BUTTON_DISPLAY_STATE(State):
 # define the states
       
 class TURN_STATE(State):
-    def __init__(self, motor_left: Motor, motor_right: Motor, imu: IMUHandler, stop_handler: CustomHandler):
+    def __init__(self, motor_left: Motor, motor_right: Motor, imu: IMUHandler, target_angle, stop_handler: CustomHandler, ):
+        State.__init__(self, "TURN", next = END)
         self.motor_left = motor_left
         self.motor_right = motor_right
         self.imu = imu
+        self.target_angle = target_angle
         self.stop_handler = stop_handler
         self.stop_listener = None
     def enable(self):
         State.enable(self)
-        self.motor_left.spin(DirectionType.FORWARD)
-        self.motor_right.spin(DirectionType.REVERSE)
+        self.motor_left.spin(DirectionType.REVERSE)
+        self.motor_right.spin(DirectionType.FORWARD)
         self.stop_handler.expect()
         self.stop_handler.condition_reached.addEventListener(self.disable)
+    def act(self):
+        GAIN = 60
+        error = self.target_angle - self.imu.imu.rotation()
+        self.motor_left.set_velocity(GAIN*self.gain_function(error))
+        self.motor_right.set_velocity(-GAIN*self.gain_function(error))
+        PORTS.BRAIN.screen.print_at(str(self.target_angle - self.imu.imu.rotation()), x=10, y=130)
     def disable(self):
-
+        State.disable(self)
+        self.stop_handler.stop_expecting()
+        self.motor_right.stop()
+        self.motor_left.stop()
+        self.__next.enable()
+    def gain_function(self, x): #use x/(x+10) so that for large values of degrees velocity isnt insane, also use only positive values of x
+        sgn = math.copysign(1, x)
+        pos = abs(x)
+        return sgn*pos/(pos+10)
     
-
+TURN_AFTER_DRIVE = TURN_STATE(PORTS.ONE, PORTS.TEN, IMU_6, -180, CustomHandler(lambda: abs(IMU_6.imu.heading()-180)<0.5))
 
 class DRIVE_STATE(State):
     class Direction:
-        FORWARD = -1
-        BACKWARD = 1
-    def __init__(self, motor_left: Motor, motor_right: Motor, direction, stop_handler: CustomHandler, button: ButtonHandler):
+        FORWARD = 1
+        BACKWARD = -1
+    def __init__(self, motor_left: Motor, motor_right: Motor, direction, target_angle, stop_handler: CustomHandler, button: ButtonHandler):
         State.__init__(self, "DRIVE", next = END)
         self.motor_left = motor_left
         self.motor_right = motor_right
@@ -332,19 +348,21 @@ class DRIVE_STATE(State):
         self.direction = direction
         self.turned = False
         self.disable_handler = None
+        self.target_angle = target_angle
     def enable(self):
         State.enable(self)
         self.button_listener = self.button_handler.pressed.addEventListener(self.disable)
         self.stop_handler.expect()
         self.stop_listener = self.stop_handler.condition_reached.addEventListener(self.disable)
         self.motor_left.spin(DirectionType.FORWARD)
+        self.target_angle = IMU_6.imu.rotation()
         self.motor_right.spin(DirectionType.FORWARD)
     def act(self):
-        error = IMU_6.imu.rotation()
+        error = IMU_6.imu.rotation() - self.target_angle
         GAIN = 1.2
         effort = error*GAIN
-        self.motor_left.set_velocity(-40*self.direction + effort*self.direction, VelocityUnits.RPM)
-        self.motor_right.set_velocity(-40*self.direction - effort*self.direction, VelocityUnits.RPM)
+        self.motor_left.set_velocity(40*self.direction - effort, VelocityUnits.RPM)
+        self.motor_right.set_velocity(40*self.direction + effort, VelocityUnits.RPM)
     def disable(self):
         self.motor_left.stop()
         self.motor_right.stop()
@@ -355,16 +373,23 @@ class DRIVE_STATE(State):
         self.__next.enable()
 
 
-class FIRST_DRIVE_STATE(DRIVE_STATE):
-    def __init__(self, motor_left: Motor, motor_right: Motor):
-        DRIVE_STATE.__init__(self, motor_left, motor_right, DRIVE_STATE.Direction.BACKWARD, CustomHandler(lambda: ULTRASONIC_G.sonar.distance(DistanceUnits.MM)<40), BUTTON_C)
+class HAIL_MARY_DRIVE_STATE(DRIVE_STATE):
+    def __init__(self, motor_left: Motor, motor_right: Motor, target_angle_override = 0):
+        DRIVE_STATE.__init__(self, motor_left, motor_right, DRIVE_STATE.Direction.FORWARD, 0, CustomHandler(lambda: ULTRASONIC_G.sonar.distance(DistanceUnits.MM)<40), BUTTON_C)
+        self.target_angle_override = target_angle_override
+    def enable(self):
+        DRIVE_STATE.enable(self)
+        self.target_angle = self.target_angle_override
 
-FIRST_DRIVE = FIRST_DRIVE_STATE(PORTS.ONE, PORTS.TEN)
+
+FIRST_DRIVE = HAIL_MARY_DRIVE_STATE(PORTS.ONE, PORTS.TEN)
+SECOND_DRIVE = HAIL_MARY_DRIVE_STATE(PORTS.ONE, PORTS.TEN, -180)
 
 
 class DRIVE_BACK_STATE(DRIVE_STATE):
     def __init__(self, motor_left: Motor, motor_right: Motor):
-        DRIVE_STATE.__init__(self, motor_left, motor_right, DRIVE_STATE.Direction.FORWARD, CustomHandler(self.target_reached), BUTTON_C)
+        DRIVE_STATE.__init__(self, motor_left, motor_right, DRIVE_STATE.Direction.BACKWARD, 0, CustomHandler(self.target_reached), BUTTON_C)
+        self.name = "DRIVE_BACK"
         self.stop_handler.__check_func = self.target_reached
         self.left_initial = self.motor_left.position()
         self.right_initial = self.motor_right.position()
@@ -410,7 +435,9 @@ BUTTON_DISPLAY = BUTTON_DISPLAY_STATE(BUTTON_C)
 IDLE2.set_next(IDLE)
 IDLE.set_next(FIRST_DRIVE)
 FIRST_DRIVE.set_next(DRIVE_BACK)
-DRIVE_BACK.set_next(IDLE2)
+DRIVE_BACK.set_next(TURN_AFTER_DRIVE)
+TURN_AFTER_DRIVE.set_next(SECOND_DRIVE)
+SECOND_DRIVE.set_next(IDLE2)
 BUTTON_DISPLAY.enable()
 IDLE.enable()
 
