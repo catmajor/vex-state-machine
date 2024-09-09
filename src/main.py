@@ -167,6 +167,8 @@ BUTTON_C = ButtonHandler(PORTS.C)
 class IMUHandler():
     def __init__(self, port: Inertial):
         self.imu = port
+        self.collision = EventHandler()
+        self.imu.collision(self.collision.add)
 
 IMU_6 = IMUHandler(PORTS.SIX)
 
@@ -186,9 +188,13 @@ class MotorHandler():
 
 
 STATEHEAD = DblLinkedHead()
+#useful metrics for determining states. If theres a mismatch, then there is a loose state on somewhere
+active_states_estimate = 0
+active_states_actual = 0
 #State definition
 #defines state behavior when enabled/disabled
 #doesn't dictate at all whether state will automatically disable or enable
+
 class State():
     def __init__(self, name: str, next):
         self.name = name
@@ -199,12 +205,19 @@ class State():
         if (self.__active): return
         self.__active = True
         self.__node.append_to_end()
+        global active_states_estimate
+        active_states_estimate = active_states_estimate+1
     def act(self):
         pass
     def disable(self):
         if (not self.__active): return
         self.__active = False
-        PORTS.BRAIN.screen.print_at(self.to_string() + " -> " + self.__next.to_string(), x=10, y=20)
+        global active_states_estimate
+        active_states_estimate = active_states_estimate-1
+        PORTS.BRAIN.screen.set_pen_color(Color.BLACK)
+        PORTS.BRAIN.screen.draw_rectangle(0, 0, 480, 22, Color.BLACK)
+        PORTS.BRAIN.screen.set_pen_color(Color.WHITE)
+        PORTS.BRAIN.screen.print_at(self.to_string() + " -> " + self.__next.to_string(), x=0, y=18)
         self.__node.remove()
     def to_string(self):
         return self.name
@@ -250,13 +263,6 @@ class IDLE_STATE(State):
         State.disable(self)
         #self.button.pressed.removeEventListener(self.handler)
         self.__next.enable()
-    def act(self):
-        if self.vary:
-            self.vary = False
-            PORTS.BRAIN.screen.print_at("x", x=10, y=110)
-        else:
-            self.vary = True
-            PORTS.BRAIN.screen.print_at("y", x=10, y=110)
 
 #second test idle state
 class IDLE_STATE2(State):
@@ -272,31 +278,49 @@ class IDLE_STATE2(State):
         State.disable(self)
         #self.button.pressed.removeEventListener(self.handler)
         self.__next.enable()
-    def act(self):
-        if self.vary:
-            self.vary = False
-            PORTS.BRAIN.screen.print_at(IMU_6.imu.rotation(), x=100, y=110)
-        else:
-            self.vary = True
-            PORTS.BRAIN.screen.print_at(IMU_6.imu.rotation(), x=100, y=110)
 
-class BUTTON_DISPLAY_STATE(State):
-    def __init__(self, button: ButtonHandler, next = END):
+program_time = 0
+
+class ROBOT_METRICS_STATE(State):
+    def __init__(self, next = END):
         State.__init__(self, "BUTTON_DISPLAY", next)
-        self.button = button
         self.count = 0
         self.handler = None
+        self.button = BUTTON_C
+        self.brain = PORTS.BRAIN
     def enable(self):
         State.enable(self)
         self.handler = self.button.pressed.addEventListener(self.on_press)
-        PORTS.BRAIN.screen.print_at("Button Presses: " + str(self.count), x=10, y=40)
+        #vex screen is 480x272 pixels
     def act(self):
-        PORTS.BRAIN.screen.print_at("Button Presses: " + str(self.count), x=10, y=40)
+        self.brain.screen.set_pen_color(Color.WHITE)
+        self.brain.screen.draw_rectangle(0, 22, 480, 250, Color.BLACK)
+        self.x = 10
+        self.y = 42
+        self.brain.screen.set_pen_color(Color.BLUE)
+        self.print("Program cycles:")
+        self.print(str(program_time))
+        self.print("Active States (Est):")
+        self.print(str(active_states_estimate))
+        self.print("Active States (Act):")
+        self.print(str(active_states_actual))
+        self.print("Button Presses:")
+        self.print(str(self.count))
+        self.print("Rotation:")
+        self.print(str(IMU_6.imu.rotation()))
+        self.print("Distance in front:")
+        self.print(str(ULTRASONIC_G.sonar.distance(DistanceUnits.CM)))
     def disable(self):
         State.disable(self)
         self.button.pressed.removeEventListener(self.handler)
     def on_press(self):
         self.count = self.count+1
+    def print(self, text):
+        self.brain.screen.print_at(text, x = self.x, y = self.y, opaque = False)
+        self.y = self.y+20
+        if self.y>=240:
+            self.y = 42
+            self.x = 250
 # define the states
       
 class TURN_STATE(State):
@@ -308,12 +332,14 @@ class TURN_STATE(State):
         self.target_angle = target_angle
         self.stop_handler = stop_handler
         self.stop_listener = None
+        self.button_listener = None
     def enable(self):
         State.enable(self)
         self.motor_left.spin(DirectionType.REVERSE)
         self.motor_right.spin(DirectionType.FORWARD)
         self.stop_handler.expect()
-        self.stop_handler.condition_reached.addEventListener(self.disable)
+        self.button_listener = BUTTON_C.pressed.addEventListener(self.disable)
+        self.stop_listener = self.stop_handler.condition_reached.addEventListener(self.disable)
     def act(self):
         GAIN = 60
         error = self.target_angle - self.imu.imu.rotation()
@@ -323,9 +349,11 @@ class TURN_STATE(State):
     def disable(self):
         State.disable(self)
         self.stop_handler.stop_expecting()
+        self.stop_handler.condition_reached.removeEventListener(self.stop_listener)
         self.motor_right.stop()
         self.motor_left.stop()
         self.__next.enable()
+        BUTTON_C.pressed.removeEventListener(self.button_listener)
     def gain_function(self, x): #use x/(x+10) so that for large values of degrees velocity isnt insane, also use only positive values of x
         sgn = math.copysign(1, x)
         pos = abs(x)
@@ -373,9 +401,11 @@ class DRIVE_STATE(State):
         self.__next.enable()
 
 
+ROBOT_CLOSE = CustomHandler(lambda: ULTRASONIC_G.sonar.distance(DistanceUnits.CM)<8)
+
 class HAIL_MARY_DRIVE_STATE(DRIVE_STATE):
     def __init__(self, motor_left: Motor, motor_right: Motor, target_angle_override = 0):
-        DRIVE_STATE.__init__(self, motor_left, motor_right, DRIVE_STATE.Direction.FORWARD, 0, CustomHandler(lambda: ULTRASONIC_G.sonar.distance(DistanceUnits.MM)<40), BUTTON_C)
+        DRIVE_STATE.__init__(self, motor_left, motor_right, DRIVE_STATE.Direction.FORWARD, 0, ROBOT_CLOSE, BUTTON_C)
         self.target_angle_override = target_angle_override
     def enable(self):
         DRIVE_STATE.enable(self)
@@ -431,14 +461,14 @@ while(IMU_6.imu.is_calibrating()):
 IMU_6.imu.set_rotation(0, RotationUnits.DEG)
 IDLE = IDLE_STATE(BUTTON_C)
 IDLE2 = IDLE_STATE2(BUTTON_C)
-BUTTON_DISPLAY = BUTTON_DISPLAY_STATE(BUTTON_C)
+METRICS = ROBOT_METRICS_STATE()
 IDLE2.set_next(IDLE)
 IDLE.set_next(FIRST_DRIVE)
 FIRST_DRIVE.set_next(DRIVE_BACK)
 DRIVE_BACK.set_next(TURN_AFTER_DRIVE)
 TURN_AFTER_DRIVE.set_next(SECOND_DRIVE)
 SECOND_DRIVE.set_next(IDLE2)
-BUTTON_DISPLAY.enable()
+METRICS.enable()
 IDLE.enable()
 
 """
@@ -463,10 +493,9 @@ Note that the main doesn't "do" anything. That is because the event (button pres
 automatically. So we have an empty main program!!!
 """
 # The main loop
-last_velocity_right = 0
-last_velocity_left = 0
-program_time = 0
+
 while True:
+    active_states_actual = length() - 1
     HANDLER_CONTROLLER.check_all_handlers()
     EVENT_CONTROL.execute()
     runner_head = STATEHEAD.next
@@ -474,6 +503,5 @@ while True:
         runner_head.data.act()
         runner_head = runner_head.next
     program_time = program_time + 1
-    PORTS.BRAIN.screen.print_at(length(), x=10, y= 60)
     sleep(0.2, SECONDS)
 
