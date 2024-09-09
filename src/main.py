@@ -130,18 +130,26 @@ class CustomHandlerController():
 
 HANDLER_CONTROLLER = CustomHandlerController()
 
-class CustomHandler():
+class Handler():
+    def __init__(self):
+        self.event = EventHandler()
+    def addEventListener(self, func: Callable[[], None], once = False):
+        return self.event.addEventListener(func, once)
+    def removeEventListener(self, node):
+        self.event.removeEventListener(node)
+
+class CustomHandler(Handler):
     def __init__(self, check_func: Callable[[], bool] = lambda: True):
+        Handler.__init__(self)
         self.__node = DblLinkdListNode(HANDLER_CONTROLLER.HEAD, None, None, self)
         self.once = False
         self.expecting = False
         self.detected = False
         self.__check_func = check_func
-        self.condition_reached = EventHandler()
     def check(self) -> bool:
         return self.__check_func()
     def dispatch(self):
-        self.condition_reached.add()
+        self.event.add()
     def expect(self, once = False):
         if (self.expecting): return
         self.expecting = True
@@ -153,39 +161,28 @@ class CustomHandler():
 
 
 #specific event handler for buttons, takes in the Bumper vex object and creates
-#the event handlers for press and release      
-class ButtonHandler():
-    def __init__(self, port: Bumper):
-        self.button = port
-        self.pressed = EventHandler()
-        self.released = EventHandler()
-        self.button.pressed(self.pressed.add)
-        self.button.released(self.released.add)
+#the event handlers for press and release 
 
-BUTTON_C = ButtonHandler(PORTS.C)
+class SensorHandler(Handler):
+    def __init__(self, sensor_func):
+        Handler.__init__(self)
+        sensor_func(self.event.add)
 
-class IMUHandler():
-    def __init__(self, port: Inertial):
-        self.imu = port
-        self.collision = EventHandler()
-        self.imu.collision(self.collision.add)
+BRAIN = PORTS.BRAIN
 
-IMU_6 = IMUHandler(PORTS.SIX)
+BUTTON_C = PORTS.C
+BUTTON_C_PRESSED = SensorHandler(BUTTON_C.pressed)
+BUTTON_C_RELEASED = SensorHandler(BUTTON_C.released)
 
-class UltrasonicHandler():
-    def __init__(self, port: Sonar):
-        self.sonar = port
+IMU_6 = PORTS.SIX
+IMU_6_COLLISION = SensorHandler(PORTS.SIX.collision)
 
-ULTRASONIC_G = UltrasonicHandler(PORTS.G)
+ULTRASONIC_G = PORTS.G
 
-
-class MotorHandler():
-    def __init__(self, port: Motor):
-        self.motor = port
-        self.on_finish = EventHandler()
-        self.dispatcher = EventDispatcher(self.on_finish)
-
-
+MOTOR_ONE = PORTS.ONE
+MOTOR_LEFT = MOTOR_ONE
+MOTOR_TWO = PORTS.TEN
+MOTOR_RIGHT = MOTOR_TWO
 
 STATEHEAD = DblLinkedHead()
 #useful metrics for determining states. If theres a mismatch, then there is a loose state on somewhere
@@ -198,7 +195,7 @@ active_states_actual = 0
 class State():
     def __init__(self, name: str, next):
         self.name = name
-        self.__next = next
+        self.next = next
         self.__node = DblLinkdListNode(STATEHEAD, None, None, self)
         self.__active = False
     def enable(self):
@@ -214,17 +211,17 @@ class State():
         self.__active = False
         global active_states_estimate
         active_states_estimate = active_states_estimate-1
-        PORTS.BRAIN.screen.set_pen_color(Color.BLACK)
-        PORTS.BRAIN.screen.draw_rectangle(0, 0, 480, 22, Color.BLACK)
-        PORTS.BRAIN.screen.set_pen_color(Color.WHITE)
-        PORTS.BRAIN.screen.print_at(self.to_string() + " -> " + self.__next.to_string(), x=0, y=18)
+        BRAIN.screen.set_pen_color(Color.BLACK)
+        BRAIN.screen.draw_rectangle(0, 0, 480, 22, Color.BLACK)
+        BRAIN.screen.set_pen_color(Color.WHITE)
+        BRAIN.screen.print_at(self.to_string() + " -> " + self.next.to_string(), x=0, y=18)
         self.__node.remove()
     def to_string(self):
         return self.name
     def active(self):
         return self.__active
     def set_next(self, next):
-        self.__next = next
+        self.next = next
 
 
 class StateList:
@@ -252,32 +249,25 @@ END = END_STATE()
 
 #test idle state
 class IDLE_STATE(State):
-    def __init__(self, button: ButtonHandler, next = END):
+    def __init__(self, next = END):
         State.__init__(self, "IDLE", next)
-        self.button = button
-        self.vary = False
     def enable(self):
         State.enable(self)
-        self.listener = self.button.pressed.addEventListener(self.disable, once=True)
+        self.listener = BUTTON_C_PRESSED.addEventListener(self.disable, once=True)
     def disable(self):
         State.disable(self)
-        #self.button.pressed.removeEventListener(self.handler)
-        self.__next.enable()
+        self.next.enable()
 
 #second test idle state
 class IDLE_STATE2(State):
-    def __init__(self, button: ButtonHandler, next = END):
+    def __init__(self, next = END):
         State.__init__(self, "IDLE2", next)
-        self.button = button
-        self.listener = None
-        self.vary = False
     def enable(self):
         State.enable(self)
-        self.listener = self.button.pressed.addEventListener(self.disable, once=True)
+        self.listener = BUTTON_C_PRESSED.addEventListener(self.disable, once=True)
     def disable(self):
         State.disable(self)
-        #self.button.pressed.removeEventListener(self.handler)
-        self.__next.enable()
+        self.next.enable()
 
 program_time = 0
 
@@ -286,18 +276,16 @@ class ROBOT_METRICS_STATE(State):
         State.__init__(self, "BUTTON_DISPLAY", next)
         self.count = 0
         self.handler = None
-        self.button = BUTTON_C
-        self.brain = PORTS.BRAIN
     def enable(self):
         State.enable(self)
-        self.handler = self.button.pressed.addEventListener(self.on_press)
+        self.handler = BUTTON_C_PRESSED.addEventListener(self.on_press)
         #vex screen is 480x272 pixels
     def act(self):
-        self.brain.screen.set_pen_color(Color.WHITE)
-        self.brain.screen.draw_rectangle(0, 22, 480, 250, Color.BLACK)
+        BRAIN.screen.set_pen_color(Color.WHITE)
+        BRAIN.screen.draw_rectangle(0, 22, 480, 250, Color.BLACK)
         self.x = 10
         self.y = 42
-        self.brain.screen.set_pen_color(Color.BLUE)
+        BRAIN.screen.set_pen_color(Color.BLUE)
         self.print("Program cycles:")
         self.print(str(program_time))
         self.print("Active States (Est):")
@@ -307,16 +295,16 @@ class ROBOT_METRICS_STATE(State):
         self.print("Button Presses:")
         self.print(str(self.count))
         self.print("Rotation:")
-        self.print(str(IMU_6.imu.rotation()))
+        self.print(str(IMU_6.rotation()))
         self.print("Distance in front:")
-        self.print(str(ULTRASONIC_G.sonar.distance(DistanceUnits.CM)))
+        self.print(str(ULTRASONIC_G.distance(DistanceUnits.CM)))
     def disable(self):
         State.disable(self)
-        self.button.pressed.removeEventListener(self.handler)
+        BUTTON_C_PRESSED.removeEventListener(self.handler)
     def on_press(self):
         self.count = self.count+1
     def print(self, text):
-        self.brain.screen.print_at(text, x = self.x, y = self.y, opaque = False)
+        BRAIN.screen.print_at(text, x = self.x, y = self.y, opaque = False)
         self.y = self.y+20
         if self.y>=240:
             self.y = 42
@@ -324,53 +312,47 @@ class ROBOT_METRICS_STATE(State):
 # define the states
       
 class TURN_STATE(State):
-    def __init__(self, motor_left: Motor, motor_right: Motor, imu: IMUHandler, target_angle, stop_handler: CustomHandler, ):
+    def __init__(self, target_angle, stop_handler: CustomHandler, ):
         State.__init__(self, "TURN", next = END)
-        self.motor_left = motor_left
-        self.motor_right = motor_right
-        self.imu = imu
         self.target_angle = target_angle
         self.stop_handler = stop_handler
         self.stop_listener = None
         self.button_listener = None
     def enable(self):
         State.enable(self)
-        self.motor_left.spin(DirectionType.REVERSE)
-        self.motor_right.spin(DirectionType.FORWARD)
+        MOTOR_LEFT.spin(DirectionType.REVERSE)
+        MOTOR_RIGHT.spin(DirectionType.FORWARD)
         self.stop_handler.expect()
-        self.button_listener = BUTTON_C.pressed.addEventListener(self.disable)
-        self.stop_listener = self.stop_handler.condition_reached.addEventListener(self.disable)
+        self.button_listener = BUTTON_C_PRESSED.addEventListener(self.disable)
+        self.stop_listener = self.stop_handler.addEventListener(self.disable)
     def act(self):
         GAIN = 60
-        error = self.target_angle - self.imu.imu.rotation()
-        self.motor_left.set_velocity(GAIN*self.gain_function(error))
-        self.motor_right.set_velocity(-GAIN*self.gain_function(error))
-        PORTS.BRAIN.screen.print_at(str(self.target_angle - self.imu.imu.rotation()), x=10, y=130)
+        error = self.target_angle - IMU_6.rotation()
+        MOTOR_LEFT.set_velocity(GAIN*self.gain_function(error))
+        MOTOR_RIGHT.set_velocity(-GAIN*self.gain_function(error))
+        PORTS.BRAIN.screen.print_at(str(self.target_angle - IMU_6.rotation()), x=10, y=130)
     def disable(self):
         State.disable(self)
         self.stop_handler.stop_expecting()
-        self.stop_handler.condition_reached.removeEventListener(self.stop_listener)
-        self.motor_right.stop()
-        self.motor_left.stop()
-        self.__next.enable()
-        BUTTON_C.pressed.removeEventListener(self.button_listener)
+        self.stop_handler.removeEventListener(self.stop_listener)
+        MOTOR_RIGHT.stop()
+        MOTOR_LEFT.stop()
+        self.next.enable()
+        BUTTON_C_PRESSED.removeEventListener(self.button_listener)
     def gain_function(self, x): #use x/(x+10) so that for large values of degrees velocity isnt insane, also use only positive values of x
         sgn = math.copysign(1, x)
         pos = abs(x)
         return sgn*pos/(pos+10)
     
-TURN_AFTER_DRIVE = TURN_STATE(PORTS.ONE, PORTS.TEN, IMU_6, -180, CustomHandler(lambda: abs(IMU_6.imu.heading()-180)<0.5))
+TURN_AFTER_DRIVE = TURN_STATE(-180, CustomHandler(lambda: abs(-180 - IMU_6.rotation())<0.5))
 
 class DRIVE_STATE(State):
     class Direction:
         FORWARD = 1
         BACKWARD = -1
-    def __init__(self, motor_left: Motor, motor_right: Motor, direction, target_angle, stop_handler: CustomHandler, button: ButtonHandler):
+    def __init__(self, direction, target_angle, stop_handler: CustomHandler):
         State.__init__(self, "DRIVE", next = END)
-        self.motor_left = motor_left
-        self.motor_right = motor_right
         self.button_listener = None
-        self.button_handler = button
         self.stop_handler = stop_handler
         self.stop_listener = None
         self.direction = direction
@@ -379,57 +361,58 @@ class DRIVE_STATE(State):
         self.target_angle = target_angle
     def enable(self):
         State.enable(self)
-        self.button_listener = self.button_handler.pressed.addEventListener(self.disable)
+        self.button_listener = BUTTON_C_PRESSED.addEventListener(self.disable)
         self.stop_handler.expect()
-        self.stop_listener = self.stop_handler.condition_reached.addEventListener(self.disable)
-        self.motor_left.spin(DirectionType.FORWARD)
-        self.target_angle = IMU_6.imu.rotation()
-        self.motor_right.spin(DirectionType.FORWARD)
+        self.stop_listener = self.stop_handler.addEventListener(self.disable)
+        MOTOR_LEFT.spin(DirectionType.FORWARD)
+        self.target_angle = IMU_6.rotation()
+        MOTOR_RIGHT.spin(DirectionType.FORWARD)
     def act(self):
-        error = IMU_6.imu.rotation() - self.target_angle
-        GAIN = 1.2
+        error = IMU_6.rotation() - self.target_angle
+        GAIN = 2.6
         effort = error*GAIN
-        self.motor_left.set_velocity(40*self.direction - effort, VelocityUnits.RPM)
-        self.motor_right.set_velocity(40*self.direction + effort, VelocityUnits.RPM)
+        MOTOR_LEFT.set_velocity(80*self.direction - effort, VelocityUnits.RPM)
+        MOTOR_RIGHT.set_velocity(80*self.direction + effort, VelocityUnits.RPM)
     def disable(self):
-        self.motor_left.stop()
-        self.motor_right.stop()
+        MOTOR_LEFT.stop()
+        MOTOR_RIGHT.stop()
         self.stop_handler.stop_expecting()
-        self.button_handler.pressed.removeEventListener(self.button_listener)
-        self.stop_handler.condition_reached.removeEventListener(self.stop_listener)
+        BUTTON_C_PRESSED.removeEventListener(self.button_listener)
+        self.stop_handler.removeEventListener(self.stop_listener)
         State.disable(self)
-        self.__next.enable()
+        self.next.enable()
 
 
-ROBOT_CLOSE = CustomHandler(lambda: ULTRASONIC_G.sonar.distance(DistanceUnits.CM)<8)
+ROBOT_CLOSE = CustomHandler(lambda: ULTRASONIC_G.distance(DistanceUnits.CM)<8)
 
 class HAIL_MARY_DRIVE_STATE(DRIVE_STATE):
-    def __init__(self, motor_left: Motor, motor_right: Motor, target_angle_override = 0):
-        DRIVE_STATE.__init__(self, motor_left, motor_right, DRIVE_STATE.Direction.FORWARD, 0, ROBOT_CLOSE, BUTTON_C)
+    def __init__(self, target_angle_override = 0):
+        DRIVE_STATE.__init__(self, DRIVE_STATE.Direction.FORWARD, 0, ROBOT_CLOSE)
         self.target_angle_override = target_angle_override
     def enable(self):
         DRIVE_STATE.enable(self)
         self.target_angle = self.target_angle_override
 
 
-FIRST_DRIVE = HAIL_MARY_DRIVE_STATE(PORTS.ONE, PORTS.TEN)
-SECOND_DRIVE = HAIL_MARY_DRIVE_STATE(PORTS.ONE, PORTS.TEN, -180)
+FIRST_DRIVE = HAIL_MARY_DRIVE_STATE()
+SECOND_DRIVE = HAIL_MARY_DRIVE_STATE(-180)
 
 
 class DRIVE_BACK_STATE(DRIVE_STATE):
-    def __init__(self, motor_left: Motor, motor_right: Motor):
-        DRIVE_STATE.__init__(self, motor_left, motor_right, DRIVE_STATE.Direction.BACKWARD, 0, CustomHandler(self.target_reached), BUTTON_C)
+    def __init__(self, target_wheel_rotations):
+        DRIVE_STATE.__init__(self, DRIVE_STATE.Direction.BACKWARD, 0, CustomHandler(self.target_reached))
         self.name = "DRIVE_BACK"
+        self.target_angular_rotation = target_wheel_rotations * 360 * 5
         self.stop_handler.__check_func = self.target_reached
-        self.left_initial = self.motor_left.position()
-        self.right_initial = self.motor_right.position()
+        self.left_initial = MOTOR_LEFT.position()
+        self.right_initial = MOTOR_RIGHT.position()
     def enable(self):
         DRIVE_STATE.enable(self)
-        self.left_initial = self.motor_left.position()
-        self.right_initial = self.motor_right.position()
+        self.left_initial = MOTOR_LEFT.position()
+        self.right_initial = MOTOR_RIGHT.position()
     def target_reached(self) -> bool:
-        return abs(self.motor_left.position()-self.left_initial)>1800 and abs(self.motor_right.position()-self.right_initial)>1800
-DRIVE_BACK = DRIVE_BACK_STATE(PORTS.ONE, PORTS.TEN)
+        return abs(MOTOR_LEFT.position()-self.left_initial)>self.target_angular_rotation and abs(MOTOR_RIGHT.position()-self.right_initial)>self.target_angular_rotation
+DRIVE_BACK = DRIVE_BACK_STATE(1)
 
 
 
@@ -455,12 +438,18 @@ def handleButton(self):
     self.disable()
 """
 
-IMU_6.imu.calibrate()
-while(IMU_6.imu.is_calibrating()):
+IMU_6.calibrate()
+BRAIN.screen.set_pen_color(Color.RED)
+BRAIN.screen.print_at("CALIBRATING SENSOR! DON'T MOVE ME!", x=0, y=18)
+while(IMU_6.is_calibrating()):
     sleep(0.2, SECONDS)
-IMU_6.imu.set_rotation(0, RotationUnits.DEG)
-IDLE = IDLE_STATE(BUTTON_C)
-IDLE2 = IDLE_STATE2(BUTTON_C)
+BRAIN.screen.clear_screen()
+BRAIN.screen.set_pen_color(Color.GREEN)
+BRAIN.screen.print_at("Done calibrating, ready to run :D", x=0, y=18)
+BRAIN.screen.set_pen_color(Color.WHITE)
+IMU_6.set_rotation(0, RotationUnits.DEG)
+IDLE = IDLE_STATE()
+IDLE2 = IDLE_STATE2()
 METRICS = ROBOT_METRICS_STATE()
 IDLE2.set_next(IDLE)
 IDLE.set_next(FIRST_DRIVE)
@@ -486,7 +475,6 @@ def length():
         count = count +1
         head = head.next
     return count
-#buttonD.pressed(handleButton)
 
 """
 Note that the main doesn't "do" anything. That is because the event (button press) is captured
@@ -503,5 +491,5 @@ while True:
         runner_head.data.act()
         runner_head = runner_head.next
     program_time = program_time + 1
-    sleep(0.2, SECONDS)
+    sleep(0.1, SECONDS)
 
