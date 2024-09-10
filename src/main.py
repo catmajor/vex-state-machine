@@ -179,6 +179,8 @@ IMU_6_COLLISION = SensorHandler(PORTS.SIX.collision)
 
 ULTRASONIC_G = PORTS.G
 
+SCREEN_PRESSED = SensorHandler(PORTS.BRAIN.screen.pressed)
+
 MOTOR_ONE = PORTS.ONE
 MOTOR_LEFT = MOTOR_ONE
 MOTOR_TWO = PORTS.TEN
@@ -309,10 +311,32 @@ class ROBOT_METRICS_STATE(State):
         if self.y>=240:
             self.y = 42
             self.x = 250
+
+METRICS = ROBOT_METRICS_STATE()
 # define the states
-      
+
+class START_STATE(State):
+    def __init__(self, next = END):
+        State.__init__(self, "START", next)
+    def enable(self):
+        State.enable(self)
+        IMU_6.calibrate()
+        BRAIN.screen.set_pen_color(Color.RED)
+        BRAIN.screen.print_at("CALIBRATING SENSOR! DON'T MOVE ME!", x=0, y=18)
+        while(IMU_6.is_calibrating()):
+            sleep(0.2, SECONDS)
+        BRAIN.screen.clear_screen()
+        BRAIN.screen.set_pen_color(Color.GREEN)
+        BRAIN.screen.print_at("Done calibrating, press button to run :D", x=0, y=18)
+        BRAIN.screen.set_pen_color(Color.WHITE)
+        BUTTON_C_PRESSED.addEventListener(self.disable, once = True)
+    def disable(self):
+        State.disable(self)
+        self.next.enable()
+        METRICS.enable()
+        
 class TURN_STATE(State):
-    def __init__(self, target_angle, stop_handler: CustomHandler, ):
+    def __init__(self, target_angle, stop_handler: CustomHandler):
         State.__init__(self, "TURN", next = END)
         self.target_angle = target_angle
         self.stop_handler = stop_handler
@@ -326,7 +350,7 @@ class TURN_STATE(State):
         self.button_listener = BUTTON_C_PRESSED.addEventListener(self.disable)
         self.stop_listener = self.stop_handler.addEventListener(self.disable)
     def act(self):
-        GAIN = 60
+        GAIN = 160
         error = self.target_angle - IMU_6.rotation()
         MOTOR_LEFT.set_velocity(GAIN*self.gain_function(error))
         MOTOR_RIGHT.set_velocity(-GAIN*self.gain_function(error))
@@ -339,12 +363,13 @@ class TURN_STATE(State):
         MOTOR_LEFT.stop()
         self.next.enable()
         BUTTON_C_PRESSED.removeEventListener(self.button_listener)
-    def gain_function(self, x): #use x/(x+10) so that for large values of degrees velocity isnt insane, also use only positive values of x
+    def gain_function(self, x): #use x/(x+10) so that for large values of degrees velocity isnt insane, but for low values it's also still existent, also use only positive values of x
         sgn = math.copysign(1, x)
         pos = abs(x)
         return sgn*pos/(pos+10)
     
-TURN_AFTER_DRIVE = TURN_STATE(-180, CustomHandler(lambda: abs(-180 - IMU_6.rotation())<0.5))
+TURN_AFTER_DRIVE = TURN_STATE(180, CustomHandler(lambda: abs(180 - IMU_6.rotation())<0.5))
+TURN_AFTER_SECOND_DRIVE = TURN_STATE(0, CustomHandler(lambda: abs(0 - IMU_6.rotation())<0.5))
 
 class DRIVE_STATE(State):
     class Direction:
@@ -369,10 +394,10 @@ class DRIVE_STATE(State):
         MOTOR_RIGHT.spin(DirectionType.FORWARD)
     def act(self):
         error = IMU_6.rotation() - self.target_angle
-        GAIN = 2.6
+        GAIN = 5.2
         effort = error*GAIN
-        MOTOR_LEFT.set_velocity(80*self.direction - effort, VelocityUnits.RPM)
-        MOTOR_RIGHT.set_velocity(80*self.direction + effort, VelocityUnits.RPM)
+        MOTOR_LEFT.set_velocity(160*self.direction - effort, VelocityUnits.RPM)
+        MOTOR_RIGHT.set_velocity(160*self.direction + effort, VelocityUnits.RPM)
     def disable(self):
         MOTOR_LEFT.stop()
         MOTOR_RIGHT.stop()
@@ -386,16 +411,16 @@ class DRIVE_STATE(State):
 ROBOT_CLOSE = CustomHandler(lambda: ULTRASONIC_G.distance(DistanceUnits.CM)<8)
 
 class HAIL_MARY_DRIVE_STATE(DRIVE_STATE):
-    def __init__(self, target_angle_override = 0):
+    def __init__(self, target_angle_override = None):
         DRIVE_STATE.__init__(self, DRIVE_STATE.Direction.FORWARD, 0, ROBOT_CLOSE)
         self.target_angle_override = target_angle_override
     def enable(self):
         DRIVE_STATE.enable(self)
-        self.target_angle = self.target_angle_override
+        if self.target_angle_override!=None: self.target_angle = self.target_angle_override
 
 
-FIRST_DRIVE = HAIL_MARY_DRIVE_STATE()
-SECOND_DRIVE = HAIL_MARY_DRIVE_STATE(-180)
+FIRST_DRIVE = HAIL_MARY_DRIVE_STATE(None)
+SECOND_DRIVE = HAIL_MARY_DRIVE_STATE(None)
 
 
 class DRIVE_BACK_STATE(DRIVE_STATE):
@@ -413,7 +438,7 @@ class DRIVE_BACK_STATE(DRIVE_STATE):
     def target_reached(self) -> bool:
         return abs(MOTOR_LEFT.position()-self.left_initial)>self.target_angular_rotation and abs(MOTOR_RIGHT.position()-self.right_initial)>self.target_angular_rotation
 DRIVE_BACK = DRIVE_BACK_STATE(1)
-
+DRIVE_BACK_AT_END = DRIVE_BACK_STATE(1)
 
 
 
@@ -438,27 +463,20 @@ def handleButton(self):
     self.disable()
 """
 
-IMU_6.calibrate()
-BRAIN.screen.set_pen_color(Color.RED)
-BRAIN.screen.print_at("CALIBRATING SENSOR! DON'T MOVE ME!", x=0, y=18)
-while(IMU_6.is_calibrating()):
-    sleep(0.2, SECONDS)
-BRAIN.screen.clear_screen()
-BRAIN.screen.set_pen_color(Color.GREEN)
-BRAIN.screen.print_at("Done calibrating, ready to run :D", x=0, y=18)
-BRAIN.screen.set_pen_color(Color.WHITE)
+
 IMU_6.set_rotation(0, RotationUnits.DEG)
+START = START_STATE()
 IDLE = IDLE_STATE()
 IDLE2 = IDLE_STATE2()
-METRICS = ROBOT_METRICS_STATE()
-IDLE2.set_next(IDLE)
+START.set_next(FIRST_DRIVE)
 IDLE.set_next(FIRST_DRIVE)
 FIRST_DRIVE.set_next(DRIVE_BACK)
 DRIVE_BACK.set_next(TURN_AFTER_DRIVE)
 TURN_AFTER_DRIVE.set_next(SECOND_DRIVE)
-SECOND_DRIVE.set_next(IDLE2)
-METRICS.enable()
-IDLE.enable()
+SECOND_DRIVE.set_next(DRIVE_BACK_AT_END)
+DRIVE_BACK_AT_END.set_next(TURN_AFTER_SECOND_DRIVE)
+TURN_AFTER_SECOND_DRIVE.set_next(IDLE)
+START.enable()
 
 """
 The line below makes use of VEX's built-in event management. Basically, you set up a "callback", 
